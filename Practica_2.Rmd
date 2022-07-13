@@ -1,0 +1,582 @@
+---
+title: "Practica 2"
+author: "Daniel Rodriguez Fustes"
+date: "29/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+print_kable = function(x) {
+  print(kable_print_output <<- x)
+  cat('\n')
+}
+```
+
+## Ejercicio 1
+### Elabore una función que permita obtener una valoración completa y personalizada de un modelo GLM. La función, por tanto, deberá obtener:
+### - Análisis exploratorio, mediante tablas y gráficos, de la relación entre las variables independientes y la dependiente. Utilice para ello plot y gráficos de correlación, diagramas de caja, de densidad,… Nota: distinguir, en función del tipo de la variable dependiente, el tipo de modelo, regresión o clasificación (funciones is.factor o is.numeric).
+### - Una salida convenientemente formateada de los coeficientes estimados por el modelo, desviaciones estándar, estadístico t y sus p-valores, tanto en su versión clásica (bajo los supuestos del modelo) como Bootstrap.
+### - Ídem para las medidas de bondad del ajuste. Considere el R2, el R2 ajustado y el ECM para la regresión y el error de clasificación y los pseudo R2 para clasificación.
+### - Resultados de los tests diagnósticos del modelo: Shapiro-Wilk, Lilliefors, Levene/Brown-Forsythe, White, Breush-Godfrey, Durbin-Watson… determinando si los residuos son normales, homocedásticos y aleatorios. Nota: mediante plot(modelo) ya se obtienen los tests gráficos, pero puede personalizar la presentación usando ggplot2 o cualquiera otra librería gráfica (lattice, plotrix, plotly,...). Dados los resultados obtenidos, la función devolverá un mensaje aconsejando utilizar o no el uso de los estimadores clásicos o los de Bootstrap.
+### - Incluya un parámetro adicional, indicando si se desea realizar o no una selección de variables y, de realizarse, de qué tipo: forward, backward, stepwise. Utilice como criterio el estadístico BIC.
+### Nota: para la obtención de los estadísticos Bootstrap puede basarse en los tres paquetes implementados en R: rsample, bootstrap o boot, o realizar una función propia al efecto. Para problemas de clasificación, realice el Bootstrap para cada clase por separado. Puede aprovechar las funciones de estadística descriptiva hechas para el preprocesado en el ejercicio anterior.
+### Utilice el data frame BostonHousing del paquete mlbench para probar la función en el caso de regresión, y para clasificación (variable dependiente cualitativa) la ya preprocesada del ejercicio anterior.
+
+```{r results='asis',echo=FALSE}
+#Se cargan las librerías necesarias.
+suppressWarnings(suppressPackageStartupMessages(library(fitdistrplus)))
+suppressWarnings(suppressPackageStartupMessages(library(rcompanion)))
+suppressWarnings(suppressPackageStartupMessages(library(mlbench)))
+suppressWarnings(suppressPackageStartupMessages(library(funModeling)))
+suppressWarnings(suppressPackageStartupMessages(library(PerformanceAnalytics)))
+suppressWarnings(suppressPackageStartupMessages(library(boot)))
+suppressWarnings(suppressPackageStartupMessages(library(nortest)))
+suppressWarnings(suppressPackageStartupMessages(library(lmtest)))
+suppressWarnings(suppressPackageStartupMessages(library(kableExtra)))
+suppressWarnings(suppressPackageStartupMessages(library(broom)))
+
+#Se cargan los dataframes que se emplean en el ejercicio
+data("BostonHousing")
+BostonHousing<-as.data.frame(BostonHousing,stringsAsFactors = FALSE)
+german.bal<-readRDS("30184602-german.balanceado.RDS.bin")
+german.bal<-as.data.frame(german.bal,stringsAsFactors = FALSE)
+
+#Se define la función MLG que tiene tres argumentos: el primero es la variable dependiente, el segundo el dataframe que se va a analizar y el tercer argumento se refiere a si se desea que se realice un filtrado de variables de tipo stepwise,forward o backward.
+
+#La función ejecutará el modelo adecuado al tipo de dato que contenga la variable dependiente: numérico o factor. El modelo se desarollara sobre el dataframe que se indique. 
+
+#NOTA SOBRE LOS ARGUMENTOS DE LA FUNCION MLG: Introducir el nombre de la variable dependiente entre comillas, por ejemplo, "crim". El nombre del dataframe empleado no debe ir entrecomillado, por ejemplo, BostonHousing. El tercer argumento debe ser completado con: "No","stepwise","forward" o "backward". Siendo el criterio del filtro el estadístico BIC, calculado usando AIC con k=log(n).
+
+
+MLG<-function(var_dep,dataframe,filtrado){
+  
+  #Filtra dejando los datos numéricos del dataframe
+  dataframe_num<-Filter(is.numeric,dataframe)
+  
+  #Posición numérica de la variable elegida como dependiente
+  posicion_var_dep<-which(colnames(dataframe)==var_dep)
+  
+  #Nombre de las variables del dataframe
+  variables<-names(dataframe)
+  
+  #Nombre de la variable dependiente en función de su posición en el dataframe
+  depVar<-variables[posicion_var_dep]
+  
+  #Nombre de las variables independientes
+  indepVars<-variables[-posicion_var_dep]
+  
+  #Número de columnas del dataframe
+  numercol<-ncol(dataframe)
+  
+  #Número de columnas del dataframe numerico
+  numercol.num<-ncol(dataframe_num)
+  
+  
+  
+  # Gráfico de densidad de las variables de tipo numérico
+  cat('> **Gráficos de densidad de las variables y sus distribuciones**','\n\n')
+  for(columna in 1:numercol.num){
+    plot.new()
+    rect(par("usr")[1], par("usr")[3],par("usr")[2], par("usr")[4],col = "#f7f7f7")
+    par(new = TRUE)
+    plot(density(x=dataframe_num[,columna]),main=paste("Densidad",variables[columna]))
+    fit_normal<-fitdist(dataframe_num[,columna],"norm")
+    plot(fit_normal)
+  }
+  
+  cat('','\n\n')
+  
+  # Gráfico de dispersión entre la variable dependiente y las independientes
+  cat('> **Gráficos de dispersión entre las variables dependiente e independientes**','\n\n')
+  for(columna in 1:numercol){
+    if(is.numeric(dataframe[,var_dep])){
+    plot.new()
+    rect(par("usr")[1], par("usr")[3],par("usr")[2], par("usr")[4],col = "#f7f7f7")
+    par(new = TRUE)
+    plot(x=dataframe[,var_dep],y=dataframe[,columna],
+         main=paste("Correlación entre variables:",var_dep," y ",variables[columna]),
+         xlab=var_dep,ylab=variables[columna],las=1,cex.main=1,col="red")
+    } else {
+    plot.new()
+    rect(par("usr")[1], par("usr")[3],par("usr")[2], par("usr")[4],col = "#f7f7f7")
+    par(new = TRUE)
+    plot(x=dataframe[,var_dep],y=dataframe[,columna],
+         main=paste("Correlación entre variables:",var_dep," y ",variables[columna]),
+         xlab=var_dep,ylab=variables[columna],las=1,cex.main=1,col=rainbow(40))}
+  }
+  
+  cat('','\n\n')
+  
+  # Correlación entre la variable dependiente y cada una de las variables independientes
+   cat('> **Tabla de correlación entre las variables dependiente e independientes**','\n\n')
+    if(is.numeric(dataframe[,var_dep])){
+    correlacion<-correlation_table(dataframe_num,var_dep)
+    print_kable(knitr::kable(correlacion)%>%kable_styling(bootstrap_options = "striped", full_width = F, position = "left"))          
+                  
+  } else{
+    cat('No aplica puesto que la variable dependiente es de tipo factor','.\n\n')
+  }
+  
+  #Correlación entre las variables numéricas
+   cat('> **Correlación entre las variables numéricas**','\n\n')
+   chart.Correlation(dataframe_num, histogram = F, pch = 10,floating= FALSE)
+  
+  cat('','\n\n')
+  #ESTIMACIÓN
+  
+  #Formula de regresión/clasificación
+  mi_formula <- as.formula(paste(depVar,sep = ' ~ ',paste(indepVars,collapse=' + ')))
+  mi_formula.null <- as.formula(paste(depVar,sep = ' ~ ',paste(1)))
+  
+  #Se comprueba el tipo de dato de la variable dependiente y se carga el modelo adecuado
+    if(is.numeric(dataframe[,var_dep])){
+        full <- glm(mi_formula,data=dataframe,family = "gaussian")
+        null <- glm(mi_formula.null,data=dataframe,family = "gaussian")
+        #Regresión clasica
+        #Chequeo de filtrado de variables
+          if(filtrado=="backward"){
+          cat('> **Selección de variables según valor de BIC backward**','\n\n')
+          regresion<-step(full, data=dataframe, scope=list(upper = full, lower = null), direction="backward",k=log(nrow(dataframe)))
+          } else if (filtrado=="forward"){
+          cat('> **Selección de variables según valor de BIC forward**','\n\n')
+          regresion<-step(null, data=dataframe, scope=list(upper = full, lower = null), direction="forward",k=log(nrow(dataframe)))
+          } else if (filtrado=="stepwise"){
+          cat('> **Selección de variables según valor de BIC stepwise**','\n\n')
+          regresion<-step(null, data=dataframe, scope=list(upper = full, lower = null), direction="both",k=log(nrow(dataframe)))
+          } else if (filtrado=="No"){
+          regresion<-glm(mi_formula,data=dataframe,family = "gaussian")
+          }
+        
+          cat('','\n\n')
+          
+          cat('> **Modelo de regresión clásico**','\n\n')
+          print_kable(knitr::kable(tidy(regresion))%>%kable_styling(bootstrap_options = "striped"))
+          
+          #Error cuadrático medio
+          ECM<-sum(regresion$residuals^2)/regresion$df.residual
+          cat('> **Error cuadrático medio**','\n\n')
+          cat(ECM)
+          cat('','\n\n')
+          
+          #Medidas R2
+          R2<-nagelkerke(regresion,restrictNobs = T)
+          cat('> **Medidas de R^2^**','\n\n')
+          print_kable(knitr::kable(R2$Pseudo.R.squared.for.model.vs.null)%>%kable_styling(bootstrap_options = "striped", full_width = F, position = "left"))
+          
+          
+          #Gráfico de la regresión
+          cat('> **Gráficos de la regresión**','\n\n')
+          plot(regresion)
+          cat('','\n\n')
+        
+          #Verificación de las hipótesis del Modelo Lineal al 95% de confianza
+          cat('> **Verificación de las hipótesis del modelo lineal**','\n\n')
+            #Test de distribución normal Saphiro-Wilk (para muestras pequeñas)
+            cat('**Test de distribución normal Saphiro-Wilk**','\n\n')
+            saph<-shapiro.test(dataframe[,var_dep])
+            print_kable(knitr::kable(tidy(saph))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(saph$p.value<0.05){cat("Distribución de residuos no-normal")
+            }else{cat("Distribución normal")}
+            cat('','\n\n')
+            
+            #Test de distribución normal Lilliefors
+            cat('**Test de distribución normal Lilliefors**','\n\n')
+            lillie<-lillie.test(dataframe[,var_dep])
+            print_kable(knitr::kable(tidy(lillie))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(lillie$p.value<0.05){cat("Distribución de residuos no-normal")
+            }else{cat("Distribución normal")}
+            cat('','\n\n')
+            
+            #Test de heterocedasticidad de Breusch Pagan
+            cat('**Test de heterocedasticidad de Breusch Pagan**','\n\n')
+            bp<-bptest(regresion)
+            print_kable(knitr::kable(tidy(bp))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(bp$p.value<0.05){cat("Residuos heterocedásticos")
+            }else{cat("Residuos homocedásticos")}
+            cat('','\n\n')
+            
+            #Test de autocorrelación de Breush-Godfrey
+            cat('**Test de autocorrelación de Breush-Godfrey**','\n\n')
+            bg<-bgtest(regresion,order=3)
+            print_kable(knitr::kable(tidy(bg))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(bg$p.value<0.05){cat("Existe autocorrelación")
+            }else{cat("No existe autocorrelación")}
+            cat('','\n\n')
+          
+          #Recomendación de modelo clásico o bootstrap. Se comprueba la distribución.
+          cat('','\n\n')
+          cat('> **Modelo de estimación recomendado**','\n\n')
+            if(saph$p.value<0.05|lillie$p.value<0.05){cat("Distribución no normal, se recomienda el uso de un modelo bootstrap")
+            }else {cat("Distribución normal, se recomienda el uso de un modelo clásico")}
+          cat('','\n\n')
+        cat('###########################################################################','\n\n')    
+      
+        #Regresión bootstrap
+          cat('> **Modelo de regresión bootstrap**','\n\n')
+          set.seed(2)
+          model.boot<-function(data,indices){
+            sub.data<-data[indices,]
+            model<-glm(mi_formula,data=sub.data)
+            coef(model) }
+          regresion.boot<-boot(dataframe,model.boot,R=100)
+          print_kable(knitr::kable(tidy(regresion.boot))%>%kable_styling(bootstrap_options = "striped"))
+          
+          #Gráfico de la regresión
+          cat('> **Gráficos de la regresión bootstrap**','\n\n')
+          plot(regresion.boot)
+        
+        
+    } else {
+        full <- glm(mi_formula,data=dataframe,family = binomial("logit"))
+        null <- glm(mi_formula.null,data=dataframe,family = binomial("logit"))
+        #Clasificación clásica
+        #Chequeo de filtrado de variables
+          if(filtrado=="backward"){
+          cat('> **Selección de variables según valor de BIC backward**','\n\n')
+          clasificacion<-step(full, data=dataframe, scope=list(upper = full, lower = null), direction="backward",k=log(nrow(dataframe)))
+          
+          } else if (filtrado=="forward"){
+          cat('> **Selección de variables según valor de BIC forward**','\n\n')
+          clasificacion<-step(null, data=dataframe, scope=list(upper = full, lower = null), direction="forward",k=log(nrow(dataframe)))
+          } else if (filtrado=="stepwise"){
+          cat('> **Selección de variables según valor de BIC stepwise**','\n\n')
+          clasificacion<-step(null, data=dataframe, scope=list(upper = full, lower = null), direction="both",k=log(nrow(dataframe)))
+          } else if (filtrado=="No"){
+          clasificacion<-glm(mi_formula,data=dataframe,family=binomial(logit))
+          }
+        
+          cat('','\n\n')
+          cat('> **Modelo de clasificación clásica**','\n\n')
+          print_kable(knitr::kable(tidy(clasificacion))%>%kable_styling(bootstrap_options = "striped"))
+          
+          #Medidas R2
+          R2.clas<-nagelkerke(clasificacion,restrictNobs = T)
+          cat('> **Medidas de R^2^**','\n\n')
+          print_kable(knitr::kable(R2.clas$Pseudo.R.squared.for.model.vs.null)%>%kable_styling(bootstrap_options = "striped", full_width = F, position = "left"))
+          
+          cat('','\n\n')
+          
+          #Gráfico de la clasificación
+          cat('> **Gráficos de la clasificación**','\n\n')
+          plot(clasificacion)
+          
+          cat('','\n\n')
+        
+          #Verificación de las hipótesis del Modelo Lineal al 95% de confianza
+          cat('> **Verificación de las hipótesis del modelo lineal**','\n\n')
+            #Test de heterocedasticidad de Breusch Pagan
+            cat('**Test de heterocedasticidad de Breusch Pagan**','\n\n')
+            bp.clas<-bptest(clasificacion)
+            print_kable(knitr::kable(tidy(bp.clas))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(bp.clas$p.value<0.05){cat("Residuos heterocedásticos")
+            }else{cat("Residuos homocedásticos")}
+            
+            cat('','\n\n')
+            #Test de autocorrelacion de Breush-Godfrey
+            cat('**Test de autocorrelación de Breusch-Godfrey**','\n\n')
+            bg.clas<-bgtest(clasificacion,order=3)
+            print_kable(knitr::kable(tidy(bg.clas))%>%kable_styling(bootstrap_options = "striped",full_width = F, position = "left"))
+            if(bg.clas$p.value<0.05){cat("Existe autocorrelación")
+            }else{cat("No existe autocorrelación")}
+        
+          #Recomendación de modelo clásico o bootstrap. Se comprueba la distribución.
+          cat('','\n\n')
+          cat('> **Modelo de estimación recomendado**','\n\n')
+          cat('Variable dependiente de tipo factor por lo que se recomienda el uso de un modelo bootstrap','\n\n')
+        cat('###########################################################################','\n\n')    
+        #Clasificación bootstrap
+          set.seed(3)
+          model.boot<-function(data,indices){
+            sub.data<-data[indices,]
+            model<-glm(mi_formula,data=sub.data,family=binomial(logit))
+            coef(model) }
+          clasificacion.boot<-boot(data=as.data.frame(dataframe),model.boot,R=100)
+          cat('> **Modelo de clasificación bootstrap**','\n\n')
+          print_kable(knitr::kable(tidy(clasificacion.boot))%>%kable_styling(bootstrap_options = "striped"))
+          
+          
+          cat('','\n\n')
+          
+          #Gráfico de la clasificación
+          cat('> **Gráficos de la clasificación bootstrap**','\n\n')
+          plot(clasificacion.boot)
+    
+  }
+
+}
+cat('','\n\n')
+```
+
+```{r results='asis'}
+MLG("crim",BostonHousing,"forward")
+```
+
+```{r results='asis'}
+MLG("class",german.bal,"backward")
+```
+
+
+## Ejercicio 2
+
+### En el documento relativo a Introducción al Machine Learning se elabora un ejemplo de Minería de Datos utilizando la base de datos de german credit balanceada con 750 registros, 375 de cada clase. Uno de los modelos estimados ha sido un modelo Logit, obteniendo un área bajo la curva ROC de 0,771, muy próxima a la del mejor modelo, el Random Forest, con un valor de 0,796.
+
+### Es de esperar que un modelo GAM mejore el ajuste del GLM, pero ¿superará al Random Forest? Para ello, elabore un GAM estudiando qué tipo de regresión utilizar (ajuste polinómico o curvilíneo, Loess, spline de regresión o spline de suavizado) con cada una de las 3 variables independientes cuantitativas: duración, montante y edad. Nota: la implementación de caret no permite actualmente ajustar adecuadamente este tipo de modelos.
+
+### Al igual que en el resto de los ejemplos, utilice una estimación Bootstrap con 30 repeticiones para obtener las 5 métricas planteadas en el documento. Compare estadísticamente los resultados. Nota: puede calcular IC de AUC con la librería pROC, funciones auc() y ci.auc(). El resto de métricas puede obtenerse a través de la matriz de confusión obtenida a partir de las réplicas Bootstrap (ojo, en el documento se muestra la matriz de confusión de los 750 datos, no de las réplicas).
+
+```{r echo=FALSE}
+datos<-readRDS("30184602-german.balanceado.RDS.bin")
+# Redondeo variables numéricas, por ser en origen de tipo entero
+datos$duration <- as.integer(round(datos$duration, 0))
+datos$credit_amount <- as.integer(round(datos$credit_amount, 0))
+datos$age <- as.integer(round(datos$age, 0))
+```
+Se opta por regresar con splines suavizadas de orden 3:
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(mgcv)))
+modelo<-gam(class ~ s(duration,k=3)+s(age,k=3)+s(credit_amount,k=3)+checking_status+credit_history+purpose+savings_status+employment+installment_commitment+personal_status+other_parties+residence_since+property_magnitude+other_payment_plans+housing+existing_credits+job+num_dependents+own_telephone+foreign_worker,data=datos,family=binomial)
+kable(tidy(modelo))%>%kable_styling(bootstrap_options = "striped")
+```
+Se realiza la predicción del modelo GAM. Se asigna el valor "bad" a los valores predichos entre 0 y 0.5, se asigna el valor "good" a los valores entre 0.5 y 1. Esto se hace para que los valores observados y los valores predichos tengan los mismos niveles:
+```{r echo=FALSE}
+prediccion<-predict.gam(modelo,type="response")
+prediccion.AUC<-predict.gam(modelo,type="response")
+# Los rownames son correctos, no tocar.
+# Valor de los factores de datos$class son "bad" y "good".
+for(i in 1:length(prediccion)){
+  if(prediccion[i]<=0.5){
+    prediccion[i]<- "bad"
+  }
+  else {
+    prediccion[i]<-"good"
+  }
+}
+# Establecemos como factor el output de la predicción para que pueda cruzarse con el factor de los datos muestrales en la matriz de confusión:
+prediccion<-as.factor(prediccion)
+```
+Se calcula la matriz de confusión para obtener las métricas de sensibilidad, especificidad, precisión y estadístico kappa:
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(caret)))
+suppressWarnings(suppressPackageStartupMessages(library(ggplot2)))
+suppressWarnings(suppressPackageStartupMessages(library(lattice)))
+conf.Matrix<-confusionMatrix(prediccion,datos$class)
+conf.Matrix.acc.kapp<-conf.Matrix$overall[1:2]
+conf.Matrix.sens.spec<-conf.Matrix$byClass[1:2]
+```
+La sensibilidad del modelo GAM es `r conf.Matrix$byClass[1]`
+
+La especificidad del modelo GAM es `r conf.Matrix$byClass[2]`
+
+La precisión (accuracy) del modelo GAM es `r conf.Matrix$overall[1]`
+
+El índice kappa del modelo GAM es `r conf.Matrix$overall[2]`
+
+Se calcula la métrica ROC para el modelo GAM:
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(pROC)))
+AUC.metric<-roc(response=datos$class,predictor=as.numeric(prediccion.AUC))
+ROC.metric<-AUC.metric$auc
+```
+El ROC del modelo GAM es `r AUC.metric$auc`
+
+Se imprime la curva ROC del modelo GAM:
+```{r echo=FALSE}
+plot.roc(AUC.metric)
+```
+
+
+Se genera una tabla resumen con las 5 métricas obtenidas en el modelo GAM y se compara con las métricas obtenidas en el Random Forest:
+```{r echo=FALSE}
+# Se crea manualmente un vector con las métricas del random forest del documento "04_Introducción al machine learning"
+RF<-c(0.7242,0.7242,0.7230,0.4467,0.7962)
+names.metrics<-c("Sensitivity","Specificity","Accuracy","Kappa","ROC")
+
+metricas.gam.rf<-c(conf.Matrix.sens.spec,conf.Matrix.acc.kapp,ROC.metric,RF)
+metricas.gam.rf<-matrix(data=metricas.gam.rf,ncol=2,dimnames = list(names.metrics,c("GAM","RF")))
+
+suppressWarnings(suppressPackageStartupMessages(library("kableExtra")))
+metricas.gam.rf%>%
+   kbl(caption = "Tabla de métricas") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+
+```
+
+#### Conclusión:
+
+El modelo GAM ha obtenido un ROC de `r AUC.metric$auc` superior al random forest que obtuvo un ROC de 0.7962.
+
+El resto de las métricas también han obtenido un resultado mejor.
+
+Por tanto, el modelo GAM se considera un modelo preferible para realizar inferencia sobre el conjunto de datos muestrales.
+
+  
+## Ejercicio 3
+### La base de datos environmental de la librería lattice presenta las mediciones diarias de concentración de ozono, velocidad del viento, temperatura y radiación solar en la ciudad de Nueva York de mayo a septiembre de 1973. En concreto, se dispone de 111 observaciones con la siguiente información:
+### • Ozono. Concentración promedio de ozono (mediciones por hora) en partes por billón.
+### • Radiación. Radiación solar (de 08:00 a 12:00) en langleys.
+### • Temperatura. Temperatura máxima diaria en grados Fahrenheit.
+### • Viento. Velocidad promedio del viento (a las 07:00 y 10:00) en millas por hora.
+### En base a otros estudios, los coeficientes beta o, lo que es lo mismo, el aumento de la concentración de ozono según se varíen las condiciones climáticas en una unidad, pueden acotarse del siguiente modo (aproximadamente a un 95% de confianza): radiación 0,05 a 0,15, temperatura 1,3 a 1,7 y viento -3,7 a -3,3. Supondremos la no existencia de covarianzas.
+### Para la precisión (inversa de la varianza residual), considere como parámetros de la función gamma las dos siguientes: c0 = 56 y d0 = 24649.
+### Estime un segundo modelo sin incluir estimaciones a priori de los coeficientes beta y sus varianzas, considerando c0 = d0 = 100.
+### Estime un tercero sin incorporar información a priori. Comente cuál es la parametrización por defecto y razone lo que esto implica.
+### Compare los resultados con un modelo de regresión lineal clásico o frecuentista. Nota: la esperanza y varianza del error residual en la regresión lineal clásica es: 
+### 𝐸($𝑆𝑅^2$)=$𝜎^2$ y 𝑉𝑎𝑟($𝑆𝑅^2$)= $2 𝜎^4$ / $(𝑛−𝑘−1)$
+### Por último, estime un modelo Loess, compárelo con el resto y establezca las pertinentes conclusiones. Determine, razonadamente, cuál de ellos sería el de mayor desempeño.
+
+
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(lattice)))
+datos<-as.data.frame(environmental)
+```
+Se calculan las medias a priori de los coeficientes, la media del término independiente se establece en cero puesto que no se da información en el enunciado.
+```{r echo=FALSE}
+b0_radiation<-mean(c(0.05,0.15))
+b0_temperature<-mean(c(1.3,1.7))
+b0_wind<-mean(c(-3.7,-3.3))
+b0.vector<-c(0,b0_radiation,b0_temperature,b0_wind)
+```
+El vector de medias es `r b0.vector` .  
+
+Se calculan las precisiones a priori de los coeficientes, la precision del término independiente se establece en cero.
+```{r echo=FALSE}
+b0_radiation.prec<-(((0.05-b0_radiation)^2+(0.15-b0_radiation)^2))^-1
+b0_temperature.prec<-(((1.3-b0_temperature)^2+(1.7-b0_temperature)^2))^-1
+b0_wind.prec<-(((-3.7-b0_wind)^2+(-3.3-b0_wind)^2))^-1
+B0.vector.prec<-c(0,b0_radiation.prec,b0_temperature.prec,b0_wind.prec)
+```
+El vector de precisiones  es `r B0.vector.prec`.  
+
+Se realiza la estimación modelo.1 con los coeficientes y varianzas a priori y considerando c0=56 y d0=24649:
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library("MCMCpack")))
+modelo.1<-MCMCregress(ozone~radiation+temperature+wind,data=datos,b0=b0.vector,B0=B0.vector.prec,c0=56,d0=24649)
+# Se crea una tabla para presentar el resultado de la estimación.
+mean.modelo.1<-apply(modelo.1,2,mean)
+sd.modelo.1<-apply(modelo.1,2,sd)
+param.modelo.1<-colnames(modelo.1)
+tabla.modelo.1<-matrix(data=c(mean.modelo.1,sd.modelo.1),ncol=2,byrow=F,dimnames=list(param.modelo.1,c("mean","sd")))
+tabla.modelo.1%>%
+   kbl(caption = "Modelo.1") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+```
+Se realiza la estimación modelo.2 sin incluir estimaciones a priori de los coeficientes beta ni sus precisiones, considerando c0 = d0 = 100:
+```{r echo=FALSE}
+modelo.2<-MCMCregress(ozone~radiation+temperature+wind,data=datos,c0=100,d0=100)
+# Se crea una tabla para presentar el resultado de la estimación.
+mean.modelo.2<-apply(modelo.2,2,mean)
+sd.modelo.2<-apply(modelo.2,2,sd)
+param.modelo.2<-colnames(modelo.2)
+tabla.modelo.2<-matrix(data=c(mean.modelo.2,sd.modelo.2),ncol=2,byrow=F,dimnames=list(param.modelo.2,c("mean","sd")))
+tabla.modelo.2%>%
+   kbl(caption = "Modelo.2") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+```
+Se realiza la estimación modelo.3 sin incluir información a priori:
+```{r echo=FALSE}
+modelo.3<-MCMCregress(ozone~radiation+temperature+wind,data=datos)
+# Se crea una tabla para presentar el resultado de la estimación.
+mean.modelo.3<-apply(modelo.3,2,mean)
+sd.modelo.3<-apply(modelo.3,2,sd)
+param.modelo.3<-colnames(modelo.3)
+tabla.modelo.3<-matrix(data=c(mean.modelo.3,sd.modelo.3),ncol=2,byrow=F,dimnames=list(param.modelo.3,c("mean","sd")))
+tabla.modelo.3%>%
+   kbl(caption = "Modelo.3") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+```
+La parametrización por defecto es MCMCregress(formula, data = NULL, burnin = 1000, mcmc = 10000, thin = 1, verbose = 0, seed = NA, beta.start = NA, b0 = 0, B0 = 0, c0 = 0.001, d0 = 0.001, sigma.mu = NA, sigma.var = NA, marginal.likelihood = c(“none”, “Laplace”, “Chib95”), …) , la cual es el supuesto no informativo, y por lo tanto sus resultados serán calculados teniendo en cuenta únicamente la muestra de datos. Por defecto, el burnin (período de adaptación a la distribución estacionaria) es de 1.000 repeticiones, según el algoritmo Metropolis se establece el punto muestral candidato desde el que se generan 10.000 muestras (mcmc=10.000), el argumento thin=1 implica que no se establecen intervalos en la simulación, verbose=0 implica que no se imprime en pantalla ni el vector beta ni el error de varianza de cada iteración, seed=NA el sistema establece un valor de 12345, beta.start= NA implica que se emplean todos los betas, b0=0 implica que no se cargan las medias a priori de los betas, B0=0 implica que no se cargan precisiones a priori de los betas, c0=0.001 implica que no se aporta información de la forma de la gamma inversa a priori, d0=0.001 implica que no se aporta información de la escala de la gamma inversa a priori, sigma.mu=NA implica que no se aporta la media de la gamma inversa a priori, sima.VAR=NA implica que no se aporta la varianza de la gamma inversa a priori.
+
+Al establecer el valor de B0=0 los parámetros tendrán varianza infinita (precisión cero), y como además no se ha introducido información a priori,los resultados obtenidos por el modelo (no informativo) serán muy similares a los obtenidos mediante una regresión clásica.
+
+Se realiza la estimación modelo.4 de regresión lineal clásico:
+```{r echo=FALSE}
+modelo.4<-lm(ozone~radiation+temperature+wind,data=datos)
+tidy(modelo.4)%>%
+   kbl(caption = "Modelo.4") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+```
+Se realiza la estimación modelo.5 mediante LOESS:
+```{r echo=FALSE}
+modelo.5<-loess(ozone~radiation+temperature+wind,data=datos)
+param.modelo.5<-modelo.5[c(4,5,8)]
+nombres.param.modelo.5<-c("Equivalent Number of Parameters","Residual Standard Error","Trace of smoother matrix")
+tabla.modelo.5<-matrix(data=param.modelo.5,byrow = T,ncol=3,dimnames = list("loess",nombres.param.modelo.5))
+tabla.modelo.5%>%
+   kbl(caption = "Modelo.5") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),full_width = F)
+```
+##### Comparación de resultados entre modelos:
+
+Se realiza la comparación del error cuadrático medio (SME) de los 5 modelos estimados, para ello se calculan los residuos (diferencia entre los valores observados y los valores estimados de la variable ozono) para cada uno de los modelos estimados. Estos residuos se elevan al cuadrado y se calcula su media. El valor resultante es el SME, y será la métrica utilizada para comparar los modelos estimados.
+
+
+```{r echo=FALSE}
+#Modelo.1
+X <- model.matrix(~radiation+temperature+wind, data=datos)
+# Se calcula la media de los parametros del modelo 1: MCMC
+coefs.1<-apply(modelo.1,2,mean)[1:4]
+# Se calcula la prediccion
+pred.1<-X %*% coefs.1
+# Residuos
+resids.1<-pred.1-datos$ozone
+# SME
+SME.1<-mean(resids.1^2)
+```
+
+```{r echo=FALSE}
+#Modelo.2
+coefs.2<-apply(modelo.2,2,mean)[1:4]
+# Se calcula la prediccion
+pred.2<-X %*% coefs.2
+# Residuos
+resids.2<-pred.2-datos$ozone
+# SME
+SME.2<-mean(resids.2^2)
+``` 
+
+```{r echo=FALSE}
+#Modelo.3
+coefs.3<-apply(modelo.3,2,mean)[1:4]
+# Se calcula la prediccion
+pred.3<-X %*% coefs.3
+# Residuos
+resids.3<-pred.3-datos$ozone
+# SME
+SME.3<-mean(resids.3^2)
+```
+
+```{r echo=FALSE}
+#Modelo 4: LM
+SME.4<-mean(modelo.4$residuals^2)
+```
+
+```{r echo=FALSE}
+#Modelo 5: LOESS
+SME.5<-mean(modelo.5$residuals^2)
+```
+Se genera una tabla comparativa:  
+```{r echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library("kableExtra")))
+SME.vector<-c(SME.1,SME.2,SME.3,SME.4,SME.5)
+modelo.vector<-c("Bayesiano","Bayesiano","Bayesiano","Regresión clásica","Loess")
+tipo.vector<-c("Paramétrica","Paramétrica","Paramétrica","Paramétrica","No paramétrica")
+nombre.col<-c("Clase de modelo","Tipo de regresión","Error cuadrático medio")
+nombre.fil<-c("Modelo 1","Modelo 2","Modelo 3","Modelo 4","Modelo 5")
+SME.matrix<-matrix(data=c(modelo.vector,tipo.vector,SME.vector),ncol=3,dimnames = list(nombre.fil,nombre.col))
+SME.matrix%>%
+   kbl(caption = "Comparación de modelos estimados") %>%
+   kable_paper(full_width = F)%>%
+   kable_styling(bootstrap_options = c("striped", "hover"),position = "float_left")
+```
+
+#####  Conclusión:
+Se observa que el modelo con menor SME es el modelo 5, que se corresponde con la estimación LOESS. La diferencia del error cuadrático medio entre los otros cuatro modelos estimados es muy pequeña, de lo que deducimos que en este conjunto de datos no resulta útil la información a priori de cara a estimar la información a posteriori. El modelo LM ha obtenido un error cuadrático medio muy similar a los modelos bayesianos. El modelo Loess ha obtenido el error cuadrático medio más bajo, por lo que resulta el modelo más adecuado para utilizar con la muestra estudiada. La regresión no paramétrica se desmarca de la regresión paramétrica y se elige como el modelo más adecuado para realizar inferencia sobre el conjunto de datos "enviromental".
+
+
